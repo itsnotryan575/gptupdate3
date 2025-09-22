@@ -15,7 +15,12 @@ import {
 } from 'react-native';
 import { Plus, Mic, Send, MessageSquarePlus } from 'lucide-react-native';
 import * as Speech from 'expo-speech';
-import { AIService } from '@/services/AIService';
+import { understandUserCommand } from '@/services/gptService';
+import { ArmiIntent } from '@/types/armi-intents';
+import IntentPreviewCard from '@/components/IntentPreviewCard';
+import { addProfile } from '@/services/profileService';
+import { scheduleReminderFromIntent } from '@/services/reminderService';
+import { scheduleText } from '@/services/textService';
 import { DatabaseService } from '@/services/DatabaseService';
 import { router } from 'expo-router';
 import { useTheme } from '@/context/ThemeContext';
@@ -25,8 +30,8 @@ export default function AddInteractionScreen() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [selectedImage, setSelectedImage] = useState(null);
-  const [conversationState, setConversationState] = useState('initial'); // 'initial', 'awaiting_reminder_response'
-  const [lastProcessedData, setLastProcessedData] = useState(null);
+  const [preview, setPreview] = useState<ArmiIntent | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState([]);
   const inputRef = useRef(null);
   const { isDark } = useTheme();
@@ -43,101 +48,132 @@ export default function AddInteractionScreen() {
 
   const handleSubmit = async () => {
     if (!inputText.trim()) {
-      Alert.alert('Input Required', 'Please describe your interaction first.');
+      Alert.alert('Input Required', 'Please tell me what you want to do.');
       return;
     }
 
     setIsProcessing(true);
+    setError(null);
     try {
-      if (conversationState === 'initial') {
-        // Process the natural language input with AI
-        const extractedData = await AIService.processInteraction(inputText);
-        
-        // Add selected image to profile data if available
-        if (selectedImage) {
-          extractedData.profile.photoUri = selectedImage.uri;
-        }
-        
-        // Save to database
-        const profileId = await DatabaseService.createOrUpdateProfile(extractedData.profile);
-        
-        // Save interaction
-        await DatabaseService.addInteraction({
-          profileId,
-          description: inputText,
-          extractedData: JSON.stringify(extractedData),
-          createdAt: new Date().toISOString()
-        });
-
-        // Store the data for potential reminder creation
-        setLastProcessedData({ ...extractedData, profileId });
-        
-        // Add AI response with reminder suggestion
-        const aiMessage = `Great! I've added ${extractedData.profile.name} to your contacts.`;
-        let reminderMessage = '';
-        
-        if (extractedData.suggestedReminder) {
-          reminderMessage = `\n\nI suggest creating a reminder: "${extractedData.suggestedReminder.title}" - ${extractedData.suggestedReminder.description}. Should I set this for ${extractedData.suggestedReminder.suggestedDays} days from now?`;
-          setConversationState('awaiting_reminder_response');
-        }
-        
-        setChatMessages(prev => [...prev, { 
-          type: 'user', 
-          text: inputText 
-        }, { 
-          type: 'ai', 
-          text: aiMessage + reminderMessage
-        }]);
-        
-        if (!extractedData.suggestedReminder) {
-          // No reminder suggested, show success and reset
-          setTimeout(() => {
-            setInputText('');
-            setChatMessages([]);
-            setSelectedImage(null);
-            inputRef.current?.focus();
-          }, 2000);
-        }
-      } else if (conversationState === 'awaiting_reminder_response') {
-        // Process reminder response
-        const reminderResponse = await AIService.processReminderResponse(inputText, lastProcessedData);
-        
-        // Add both user message and AI response
-        setChatMessages(prev => [...prev, { 
-          type: 'user', 
-          text: inputText 
-        }, { 
-          type: 'ai', 
-          text: reminderResponse.response 
-        }]);
-        
-        if (reminderResponse.action === 'create') {
-          // Create the reminder
-          await DatabaseService.createReminder({
-            profileId: lastProcessedData.profileId,
-            title: reminderResponse.title,
-            description: reminderResponse.description,
-            scheduledFor: reminderResponse.scheduledFor,
-            type: reminderResponse.type
-          });
-        }
-        
-        // Reset conversation
-        setTimeout(() => {
-          setConversationState('initial');
-          setLastProcessedData(null);
-          setInputText('');
-          setChatMessages([]);
-          setSelectedImage(null);
-          inputRef.current?.focus();
-        }, 2000);
-      }
+      // Use the new GPT service to understand user intent
+      const result = await understandUserCommand(inputText, {}, "lite");
+      
+      // Add user message to chat
+      setChatMessages(prev => [...prev, { 
+        type: 'user', 
+        text: inputText 
+      }]);
+      
+      // Show preview for user confirmation
+      setPreview(result);
     } catch (error) {
-      console.error('Error processing interaction:', error);
-      Alert.alert('Error', 'Failed to process interaction. Please try again.');
+      console.error('Error understanding command:', error);
+      setError(error.message || 'Failed to understand your request. Please try again.');
+      
+      // Add error message to chat
+      setChatMessages(prev => [...prev, { 
+        type: 'user', 
+        text: inputText 
+      }, { 
+        type: 'ai', 
+        text: 'Sorry, I had trouble understanding that. Could you try rephrasing your request?'
+      }]);
     } finally {
       setIsProcessing(false);
     }
+  };
+
+  const executeIntent = async (intent: ArmiIntent) => {
+    try {
+      setIsProcessing(true);
+      
+      switch (intent.intent) {
+        case 'add_profile':
+          // Add selected image to profile data if available
+          const profileArgs = { ...intent.args };
+          const profileId = await addProfile(profileArgs);
+          
+          // If there's a selected image, update the profile with the photo
+          if (selectedImage && profileId) {
+            await DatabaseService.createOrUpdateProfile({
+              id: profileId,
+              photoUri: selectedImage.uri,
+              // Include other required fields to prevent overwriting
+              name: profileArgs.name,
+              relationship: profileArgs.relationshipType || 'acquaintance',
+              phone: profileArgs.phone || null,
+              notes: profileArgs.notes || null,
+              tags: profileArgs.tags || [],
+              lastContactDate: new Date().toISOString(),
+            });
+          }
+          
+          setChatMessages(prev => [...prev, { 
+            type: 'ai', 
+            text: `Great! I've added ${intent.args.name} to your contacts.`
+          }]);
+          break;
+          
+        case 'edit_profile':
+          // This is more complex and would require profile lookup and updates
+          Alert.alert('Feature Coming Soon', 'Profile editing via AI is not yet implemented. Please use the manual edit option.');
+          setChatMessages(prev => [...prev, { 
+            type: 'ai', 
+            text: 'Profile editing via AI is coming soon. For now, please use the manual edit option in your contacts.'
+          }]);
+          break;
+          
+        case 'schedule_text':
+          await scheduleText(intent.args);
+          setChatMessages(prev => [...prev, { 
+            type: 'ai', 
+            text: `Perfect! I've scheduled your text message for ${intent.args.when}.`
+          }]);
+          break;
+          
+        case 'schedule_reminder':
+          await scheduleReminderFromIntent(intent.args);
+          setChatMessages(prev => [...prev, { 
+            type: 'ai', 
+            text: `Got it! I've scheduled a reminder for ${intent.args.when}.`
+          }]);
+          break;
+          
+        case 'none':
+        default:
+          setChatMessages(prev => [...prev, { 
+            type: 'ai', 
+            text: intent.args.explanation || 'I couldn\'t understand what you wanted to do. Could you try rephrasing?'
+          }]);
+          break;
+      }
+      
+      // Reset form
+      setPreview(null);
+      setInputText('');
+      setSelectedImage(null);
+      
+      // Focus input for next interaction
+      setTimeout(() => {
+        inputRef.current?.focus();
+      }, 1000);
+      
+    } catch (error) {
+      console.error('Error executing intent:', error);
+      Alert.alert('Error', error.message || 'Failed to execute action. Please try again.');
+      
+      setChatMessages(prev => [...prev, { 
+        type: 'ai', 
+        text: 'Sorry, I encountered an error while trying to do that. Please try again.'
+      }]);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleCancelPreview = () => {
+    setPreview(null);
+    setError(null);
   };
 
   const handleAddPhoto = async () => {
@@ -340,9 +376,30 @@ export default function AddInteractionScreen() {
             <View style={styles.messageContainer}>
               <View style={[styles.botMessage, { backgroundColor: theme.accent }]}>
                 <Text style={[styles.messageText, { color: theme.text }]}>
-                  {conversationState === 'initial' ? 'Processing your interaction with AI...' : 'Processing your response...'}
+                  Processing your request with AI...
                 </Text>
               </View>
+            </View>
+          )}
+
+          {error && (
+            <View style={styles.messageContainer}>
+              <View style={[styles.botMessage, { backgroundColor: '#7F1D1D' }]}>
+                <Text style={[styles.messageText, { color: '#FFFFFF' }]}>
+                  {error}
+                </Text>
+              </View>
+            </View>
+          )}
+
+          {preview && (
+            <View style={styles.messageContainer}>
+              <IntentPreviewCard
+                intent={preview}
+                onConfirm={() => executeIntent(preview)}
+                onCancel={handleCancelPreview}
+                theme={theme}
+              />
             </View>
           )}
 
@@ -374,7 +431,7 @@ export default function AddInteractionScreen() {
               ref={inputRef}
               style={[styles.textInput, { color: theme.text }]}
               multiline
-              placeholder={conversationState === 'initial' ? "Who did you meet today..." : "Your response..."}
+              placeholder="Tell me what you want to do..."
               placeholderTextColor={theme.primary}
               value={inputText}
               onChangeText={setInputText}
