@@ -12,12 +12,14 @@ supabase functions serve --env-file supabase/.env
 
 ```bash
 supabase functions deploy armi-gpt
+supabase secrets set --env-file supabase/.env
 ```
 
-## Environment Setup
+## Environment Variables
 
+Create `supabase/.env` with:
 ```bash
-supabase secrets set --env-file supabase/.env
+OPENAI_API_KEY=your_openai_api_key_here
 ```
 
 ## Usage

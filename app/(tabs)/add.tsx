@@ -56,7 +56,7 @@ export default function AddInteractionScreen() {
     setError(null);
     try {
       // Use the new GPT service to understand user intent
-      const result = await understandUserCommand(inputText, {}, "lite");
+      const result = await understandUserCommand(inputText.trim(), {}, "lite");
       
       // Add user message to chat
       setChatMessages(prev => [...prev, { 
@@ -68,7 +68,8 @@ export default function AddInteractionScreen() {
       setPreview(result);
     } catch (error) {
       console.error('Error understanding command:', error);
-      setError(error.message || 'Failed to understand your request. Please try again.');
+      const errorMessage = error instanceof Error ? error.message : 'Failed to understand your request. Please try again.';
+      setError(errorMessage);
       
       // Add error message to chat
       setChatMessages(prev => [...prev, { 
@@ -76,7 +77,7 @@ export default function AddInteractionScreen() {
         text: inputText 
       }, { 
         type: 'ai', 
-        text: 'Sorry, I had trouble understanding that. Could you try rephrasing your request?'
+        text: `Sorry, I had trouble understanding that: ${errorMessage}`
       }]);
     } finally {
       setIsProcessing(false);
@@ -115,7 +116,6 @@ export default function AddInteractionScreen() {
           break;
           
         case 'edit_profile':
-          // This is more complex and would require profile lookup and updates
           Alert.alert('Feature Coming Soon', 'Profile editing via AI is not yet implemented. Please use the manual edit option.');
           setChatMessages(prev => [...prev, { 
             type: 'ai', 
@@ -127,7 +127,7 @@ export default function AddInteractionScreen() {
           await scheduleText(intent.args);
           setChatMessages(prev => [...prev, { 
             type: 'ai', 
-            text: `Perfect! I've scheduled your text message for ${intent.args.when}.`
+            text: `Perfect! I've scheduled your text message for ${new Date(intent.args.when).toLocaleString()}.`
           }]);
           break;
           
@@ -135,7 +135,7 @@ export default function AddInteractionScreen() {
           await scheduleReminderFromIntent(intent.args);
           setChatMessages(prev => [...prev, { 
             type: 'ai', 
-            text: `Got it! I've scheduled a reminder for ${intent.args.when}.`
+            text: `Got it! I've scheduled a reminder for ${new Date(intent.args.when).toLocaleString()}.`
           }]);
           break;
           
@@ -160,7 +160,24 @@ export default function AddInteractionScreen() {
       
     } catch (error) {
       console.error('Error executing intent:', error);
-      Alert.alert('Error', error.message || 'Failed to execute action. Please try again.');
+      const errorMessage = error instanceof Error ? error.message : 'Failed to execute action. Please try again.';
+      
+      // Check for date validation errors and show friendly message
+      if (errorMessage.includes('Invalid date format')) {
+        Alert.alert('Date Format Error', 'Please specify dates and times more clearly (e.g., "tomorrow at 3pm", "next Friday at 10am").');
+        setChatMessages(prev => [...prev, { 
+          type: 'ai', 
+          text: 'I need a clearer date and time. Try something like "tomorrow at 3pm" or "next Friday at 10am".'
+        }]);
+      } else {
+        Alert.alert('Error', errorMessage);
+        setChatMessages(prev => [...prev, { 
+          type: 'ai', 
+          text: `Sorry, I encountered an error: ${errorMessage}`
+        }]);
+      }
+      
+      // Don't reset preview on error so user can try again
       
       setChatMessages(prev => [...prev, { 
         type: 'ai', 

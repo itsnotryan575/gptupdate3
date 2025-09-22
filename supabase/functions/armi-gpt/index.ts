@@ -14,10 +14,11 @@ const SYSTEM_PROMPT = `
 You are ARMi's Intent Parser.
 - Output strictly in JSON matching the provided schema.
 - Never include prose.
-- Prefer ISO-8601 times (e.g., 2025-09-22T15:30:00Z). If time is unclear, return intent "none" with an explanation.
+- REQUIRE ISO-8601 times (e.g., 2025-01-22T15:30:00Z). If time is unclear or cannot be confidently parsed, return intent "none" with an explanation asking for clarification.
 - Do not invent phone numbers or IDs.
 - Do not auto-create reminders unless the user asked to remind or implies a reminder clearly (e.g., "remind me", "follow up", "check in").
 - Respect user language but normalize fields (name, tags, relationshipType).
+- If you cannot confidently fill required fields, return intent "none" with a short explanation asking the client to confirm/clarify.
 `;
 
 const schema = {
@@ -126,11 +127,11 @@ Deno.serve(async (req) => {
     const apiKey = Deno.env.get("OPENAI_API_KEY");
     if (!apiKey) return new Response(JSON.stringify({ ok: false, error: "OPENAI_API_KEY not set" }), { status: 500 });
 
-    const model = tier === "lite" ? "gpt-5-mini" : "gpt-5";
+    const model = tier === "lite" ? "gpt-4o-mini" : "gpt-4o";
 
     const body = {
       model,
-      input: [
+      messages: [
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: JSON.stringify({ message, context }) }
       ],
@@ -141,7 +142,7 @@ Deno.serve(async (req) => {
       temperature: 0.2
     };
 
-    const r = await fetch("https://api.openai.com/v1/responses", {
+    const r = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify(body)
@@ -153,8 +154,15 @@ Deno.serve(async (req) => {
     }
 
     const json = await r.json();
-    // Responses API returns the JSON as top-level output_text or content; normalize:
-    const parsed: ArmiIntent = JSON.parse(json.output_text ?? json.content?.[0]?.text ?? "{}");
+    
+    // Log raw model output in development only
+    const isDev = Deno.env.get("DENO_DEPLOYMENT_ID") === undefined;
+    if (isDev) {
+      console.log("Raw OpenAI response:", JSON.stringify(json, null, 2));
+    }
+    
+    // Parse the response from chat completions API
+    const parsed: ArmiIntent = JSON.parse(json.choices?.[0]?.message?.content ?? "{}");
 
     // Basic shape check:
     if (!parsed || typeof parsed.intent !== "string" || !parsed.args) {

@@ -5,18 +5,17 @@ export async function scheduleReminderFromIntent(args: { profileName?: string; p
   console.log('ReminderService: Scheduling reminder with args:', args);
   
   try {
-    // Parse the ISO-8601 date string
+    // Validate and parse the ISO-8601 date string
     const scheduledDate = new Date(args.when);
     
-    // Validate the date
     if (isNaN(scheduledDate.getTime())) {
-      throw new Error('Invalid date format. Expected ISO-8601 format.');
+      throw new Error(`Invalid date format: "${args.when}". Expected ISO-8601 format (e.g., 2025-01-22T15:30:00Z).`);
     }
     
     // Ensure we're not scheduling in the past
     const now = new Date();
     if (scheduledDate <= now) {
-      throw new Error('Cannot schedule reminder for past date/time.');
+      throw new Error(`Cannot schedule reminder for past date/time: ${scheduledDate.toLocaleString()}`);
     }
     
     // Find profile ID if profile name is provided
