@@ -1,7 +1,7 @@
 import React from "react";
 import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
 import { ArmiIntent } from "../types/armi-intents";
-import { CheckCircle, X, User, MessageSquare, Bell, Edit } from 'lucide-react-native';
+import { CircleCheck as CheckCircle, X, User, MessageSquare, Bell, CreditCard as Edit } from 'lucide-react-native';
 
 interface IntentPreviewCardProps {
   intent: ArmiIntent;
